@@ -1,260 +1,298 @@
--- HUD: the screen interface over the 3D world. Top bar with cash,
--- income and rebirths; a context prompt telling the player what E does
--- right now; buttons for Shop, Rebirth and Lock; a tsunami banner; and
--- a small leaderboard. The client only displays state the server sends
--- (SyncState / SyncWorld) and fires RemoteEvents for actions.
+-- Brainrot Bay: the ScreenGui over the 3D world. Top bar with cash and
+-- income, the tsunami banner, the context prompt at the bottom, and the
+-- shop panel with the rebirth button. Kept clear of the top-left corner,
+-- where Roblox's own menu buttons sit.
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local BrainrotData = require(ReplicatedStorage.Shared.BrainrotData)
+
+local BrainrotData = require(script.Parent.Parent.Shared.BrainrotData)
 
 local HUD = {}
 
 local player = Players.LocalPlayer
-local remotes = ReplicatedStorage:WaitForChild("Remotes")
-local SyncState = remotes:WaitForChild("SyncState")
-local SyncWorld = remotes:WaitForChild("SyncWorld")
-local BuyShop = remotes:WaitForChild("BuyShop")
-local Rebirth = remotes:WaitForChild("Rebirth")
-local LockBase = remotes:WaitForChild("LockBase")
+local playerGui = player:WaitForChild("PlayerGui")
 
-local gui: ScreenGui? = nil
-local cashLabel: TextLabel? = nil
-local incomeLabel: TextLabel? = nil
-local rebirthLabel: TextLabel? = nil
-local lockLabel: TextLabel? = nil
-local tsunamiLabel: TextLabel? = nil
-local promptLabel: TextLabel? = nil
-local shopFrame: Frame? = nil
-local state: any = nil
-local world: any = nil
+local screenGui = nil
+local cashLabel = nil
+local incomeLabel = nil
+local statusLabel = nil
+local banner = nil
+local bannerLabel = nil
+local promptLabel = nil
+local shopPanel = nil
+local shopList = nil
+local rebirthButton = nil
+local shopButton = nil
+local toastLabel = nil
 
--- Shorten a big number: 1,234,567 becomes 1.23M.
-local function shortNumber(n: number): string
-	if n >= 1000000 then
-		return string.format("%.2fM", n / 1000000)
-	elseif n >= 1000 then
-		return string.format("%.1fK", n / 1000)
-	else
-		return tostring(math.floor(n))
+local state = nil
+local onBuyShop = nil
+local onRebirth = nil
+
+local function money(n)
+	local text = tostring(math.floor(n))
+	local out = ""
+	while #text > 3 do
+		out = "," .. string.sub(text, -3) .. out
+		text = string.sub(text, 1, -4)
 	end
+	return "$" .. text .. out
 end
 
-local function makeLabel(parent: Instance, name: string, text: string, size: UDim2, position: UDim2, textSize: number, color: Color3): TextLabel
+local function makeLabel(parent, name, size, position, textSize, color, anchor)
 	local label = Instance.new("TextLabel")
 	label.Name = name
 	label.Size = size
 	label.Position = position
 	label.BackgroundTransparency = 1
-	label.Text = text
-	label.TextColor3 = color
-	label.TextSize = textSize
 	label.Font = Enum.Font.GothamBold
-	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.TextSize = textSize
+	label.TextColor3 = color
+	label.TextStrokeTransparency = 0
+	label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	label.TextXAlignment = anchor or Enum.TextXAlignment.Left
+	label.Text = ""
 	label.Parent = parent
 	return label
 end
 
-local function makeButton(parent: Instance, name: string, text: string, size: UDim2, position: UDim2, color: Color3): TextButton
-	local button = Instance.new("TextButton")
-	button.Name = name
-	button.Size = size
-	button.Position = position
-	button.BackgroundColor3 = color
-	button.BorderSizePixel = 0
-	button.Text = text
-	button.TextColor3 = Color3.fromRGB(255, 255, 255)
-	button.TextSize = 20
-	button.Font = Enum.Font.GothamBold
-	button.Parent = parent
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 10)
-	corner.Parent = button
-	return button
-end
+function HUD.build(buyShopCallback, rebirthCallback)
+	onBuyShop = buyShopCallback
+	onRebirth = rebirthCallback
 
--- The shop panel: one row per item with its price and level.
-local function buildShop(parent: Instance)
-	local frame = Instance.new("Frame")
-	frame.Name = "ShopFrame"
-	frame.Size = UDim2.fromOffset(340, 300)
-	frame.Position = UDim2.fromScale(0.5, 0.5)
-	frame.AnchorPoint = Vector2.new(0.5, 0.5)
-	frame.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
-	frame.BorderSizePixel = 0
-	frame.Visible = false
-	frame.Parent = parent
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 12)
-	corner.Parent = frame
-	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, 0, 0, 40)
-	title.BackgroundTransparency = 1
-	title.Text = "SHOP — spend your brainrot cash"
-	title.TextColor3 = Color3.fromRGB(255, 255, 255)
-	title.TextSize = 20
-	title.Font = Enum.Font.GothamBold
-	title.Parent = frame
-	local close = makeButton(frame, "CloseShop", "X", UDim2.fromOffset(36, 36), UDim2.new(1, -44, 0, 4), Color3.fromRGB(200, 60, 60))
-	close.MouseButton1Click:Connect(function()
-		frame.Visible = false
-	end)
-	local y = 48
-	for _, item in BrainrotData.SHOP_ITEMS do
-		local row = Instance.new("Frame")
-		row.Size = UDim2.new(1, -16, 0, 44)
-		row.Position = UDim2.fromOffset(8, y)
-		row.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
-		row.BorderSizePixel = 0
-		row.Parent = frame
-		local rowCorner = Instance.new("UICorner")
-		rowCorner.CornerRadius = UDim.new(0, 8)
-		rowCorner.Parent = row
-		local nameLabel = Instance.new("TextLabel")
-		nameLabel.Size = UDim2.new(0.55, 0, 1, 0)
-		nameLabel.Position = UDim2.fromOffset(8, 0)
-		nameLabel.BackgroundTransparency = 1
-		nameLabel.Text = item.Name .. " — " .. item.Desc
-		nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-		nameLabel.TextSize = 14
-		nameLabel.Font = Enum.Font.Gotham
-		nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-		nameLabel.TextWrapped = true
-		nameLabel.Parent = row
-		local buy = makeButton(row, "Buy" .. item.Id, "$" .. tostring(item.Price), UDim2.fromOffset(90, 32), UDim2.new(1, -98, 0.5, -16), Color3.fromRGB(60, 180, 80))
-		buy.MouseButton1Click:Connect(function()
-			BuyShop:FireServer(item.Id)
-		end)
-		y += 52
-	end
-	return frame
-end
-
--- Build the whole HUD once.
-function HUD.build()
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "BrainrotBayGui"
+	screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "BrainrotBayHUD"
 	screenGui.ResetOnSpawn = false
-	screenGui.IgnoreGuiInset = true
-	screenGui.Parent = player:WaitForChild("PlayerGui")
-	gui = screenGui
+	screenGui.Parent = playerGui
 
-	-- Top bar: cash, income, rebirths, lock.
+	-- Top bar: title, cash, income, rebirth or lock status.
 	local topBar = Instance.new("Frame")
 	topBar.Name = "TopBar"
 	topBar.Size = UDim2.new(1, 0, 0, 52)
-	topBar.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-	topBar.BackgroundTransparency = 0.25
+	topBar.Position = UDim2.new(0, 0, 0, 0)
+	topBar.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
 	topBar.BorderSizePixel = 0
 	topBar.Parent = screenGui
 
-	local title = makeLabel(topBar, "Title", "BRAINROT BAY", UDim2.fromOffset(220, 52), UDim2.fromOffset(16, 0), 26, Color3.fromRGB(255, 210, 60))
-	title.Font = Enum.Font.GothamBlack
-	cashLabel = makeLabel(topBar, "Cash", "$100", UDim2.fromOffset(180, 52), UDim2.fromOffset(250, 0), 24, Color3.fromRGB(120, 255, 120))
-	incomeLabel = makeLabel(topBar, "Income", "+$0/s", UDim2.fromOffset(150, 52), UDim2.fromOffset(440, 0), 20, Color3.fromRGB(140, 220, 255))
-	rebirthLabel = makeLabel(topBar, "Rebirths", "Rebirth x1.0", UDim2.fromOffset(160, 52), UDim2.fromOffset(600, 0), 20, Color3.fromRGB(255, 190, 40))
-	lockLabel = makeLabel(topBar, "Lock", "", UDim2.fromOffset(160, 52), UDim2.fromOffset(770, 0), 20, Color3.fromRGB(80, 170, 255))
+	makeLabel(topBar, "Title", UDim2.new(0, 260, 1, 0), UDim2.new(0, 16, 0, 0), 24, Color3.fromRGB(255, 200, 40)).Text = "BRAINROT BAY"
+	cashLabel = makeLabel(topBar, "Cash", UDim2.new(0, 200, 1, 0), UDim2.new(0, 300, 0, 0), 24, Color3.fromRGB(110, 230, 110))
+	incomeLabel = makeLabel(topBar, "Income", UDim2.new(0, 200, 1, 0), UDim2.new(0, 520, 0, 0), 24, Color3.fromRGB(110, 200, 255))
+	statusLabel = makeLabel(topBar, "Status", UDim2.new(0, 260, 1, 0), UDim2.new(1, -276, 0, 0), 22, Color3.fromRGB(255, 200, 40), Enum.TextXAlignment.Right)
 
-	-- Tsunami banner under the top bar (hidden until a warning).
-	tsunamiLabel = makeLabel(screenGui, "Tsunami", "", UDim2.fromOffset(500, 44), UDim2.new(0.5, -250, 0, 60), 24, Color3.fromRGB(255, 80, 80))
-	tsunamiLabel.BackgroundColor3 = Color3.fromRGB(40, 20, 20)
-	tsunamiLabel.BackgroundTransparency = 0.3
-	tsunamiLabel.TextXAlignment = Enum.TextXAlignment.Center
-	tsunamiLabel.Visible = false
+	-- Tsunami banner, hidden until the wave is coming.
+	banner = Instance.new("Frame")
+	banner.Name = "TsunamiBanner"
+	banner.Size = UDim2.new(0, 560, 0, 44)
+	banner.Position = UDim2.new(0.5, -280, 0, 60)
+	banner.BackgroundColor3 = Color3.fromRGB(40, 10, 10)
+	banner.BorderSizePixel = 0
+	banner.Visible = false
+	banner.Parent = screenGui
+	local bannerCorner = Instance.new("UICorner")
+	bannerCorner.CornerRadius = UDim.new(0, 10)
+	bannerCorner.Parent = banner
+	bannerLabel = makeLabel(banner, "BannerText", UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), 20, Color3.fromRGB(255, 90, 90), Enum.TextXAlignment.Center)
 
-	-- Context prompt at the bottom centre: what E does right now.
-	promptLabel = makeLabel(screenGui, "Prompt", "", UDim2.fromOffset(600, 40), UDim2.new(0.5, -300, 1, -120), 20, Color3.fromRGB(255, 255, 255))
-	promptLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-	promptLabel.BackgroundTransparency = 0.3
-	promptLabel.TextXAlignment = Enum.TextXAlignment.Center
-	promptLabel.Visible = false
+	-- Context prompt along the bottom.
+	local promptBar = Instance.new("Frame")
+	promptBar.Name = "PromptBar"
+	promptBar.Size = UDim2.new(0, 620, 0, 44)
+	promptBar.Position = UDim2.new(0.5, -310, 1, -64)
+	promptBar.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+	promptBar.BackgroundTransparency = 0.15
+	promptBar.BorderSizePixel = 0
+	promptBar.Parent = screenGui
+	local promptCorner = Instance.new("UICorner")
+	promptCorner.CornerRadius = UDim.new(0, 10)
+	promptCorner.Parent = promptBar
+	promptLabel = makeLabel(promptBar, "PromptText", UDim2.new(1, -20, 1, 0), UDim2.new(0, 10, 0, 0), 18, Color3.fromRGB(255, 255, 255), Enum.TextXAlignment.Center)
+	promptLabel.Text = "Walk to the belt and press E to buy a brainrot!"
 
-	-- Buttons at the bottom right.
-	local shopButton = makeButton(screenGui, "ShopButton", "SHOP", UDim2.fromOffset(120, 48), UDim2.new(1, -140, 1, -120), Color3.fromRGB(60, 120, 220))
-	local rebirthButton = makeButton(screenGui, "RebirthButton", "REBIRTH", UDim2.fromOffset(120, 48), UDim2.new(1, -140, 1, -64), Color3.fromRGB(180, 80, 200))
-	local lockButton = makeButton(screenGui, "LockButton", "LOCK (F)", UDim2.fromOffset(120, 48), UDim2.new(1, -270, 1, -64), Color3.fromRGB(80, 170, 255))
-	shopFrame = buildShop(screenGui)
+	-- Toast line above the prompt, for server messages.
+	toastLabel = makeLabel(screenGui, "Toast", UDim2.new(0, 620, 0, 30), UDim2.new(0.5, -310, 1, -104), 17, Color3.fromRGB(255, 220, 120), Enum.TextXAlignment.Center)
+
+	-- Shop toggle, bottom right.
+	shopButton = Instance.new("TextButton")
+	shopButton.Name = "ShopButton"
+	shopButton.Size = UDim2.new(0, 130, 0, 44)
+	shopButton.Position = UDim2.new(1, -146, 1, -64)
+	shopButton.BackgroundColor3 = Color3.fromRGB(255, 180, 40)
+	shopButton.Font = Enum.Font.GothamBold
+	shopButton.TextSize = 20
+	shopButton.TextColor3 = Color3.fromRGB(30, 30, 30)
+	shopButton.Text = "SHOP"
+	shopButton.Parent = screenGui
+	local shopCorner = Instance.new("UICorner")
+	shopCorner.CornerRadius = UDim.new(0, 10)
+	shopCorner.Parent = shopButton
 	shopButton.MouseButton1Click:Connect(function()
-		if shopFrame then
-			shopFrame.Visible = not shopFrame.Visible
+		shopPanel.Visible = not shopPanel.Visible
+		if shopPanel.Visible then
+			HUD.refreshShop()
 		end
 	end)
+
+	-- Shop panel: five upgrades and the rebirth button.
+	shopPanel = Instance.new("Frame")
+	shopPanel.Name = "ShopPanel"
+	shopPanel.Size = UDim2.new(0, 360, 0, 380)
+	shopPanel.Position = UDim2.new(1, -380, 1, -460)
+	shopPanel.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
+	shopPanel.BorderSizePixel = 0
+	shopPanel.Visible = false
+	shopPanel.Parent = screenGui
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 12)
+	panelCorner.Parent = shopPanel
+	makeLabel(shopPanel, "ShopTitle", UDim2.new(1, -20, 0, 36), UDim2.new(0, 10, 0, 8), 22, Color3.fromRGB(255, 200, 40)).Text = "SHOP"
+
+	shopList = Instance.new("Frame")
+	shopList.Name = "ShopList"
+	shopList.Size = UDim2.new(1, -20, 0, 250)
+	shopList.Position = UDim2.new(0, 10, 0, 52)
+	shopList.BackgroundTransparency = 1
+	shopList.Parent = shopPanel
+
+	for index, item in ipairs(BrainrotData.SHOP) do
+		local row = Instance.new("Frame")
+		row.Name = "ShopRow" .. item.id
+		row.Size = UDim2.new(1, 0, 0, 46)
+		row.Position = UDim2.new(0, 0, 0, (index - 1) * 50)
+		row.BackgroundColor3 = Color3.fromRGB(40, 40, 54)
+		row.BorderSizePixel = 0
+		row.Parent = shopList
+		local rowCorner = Instance.new("UICorner")
+		rowCorner.CornerRadius = UDim.new(0, 8)
+		rowCorner.Parent = row
+
+		makeLabel(row, "ItemName", UDim2.new(0, 200, 0, 22), UDim2.new(0, 10, 0, 3), 16, Color3.fromRGB(255, 255, 255)).Text = item.name
+		makeLabel(row, "ItemDesc", UDim2.new(0, 200, 0, 18), UDim2.new(0, 10, 0, 24), 13, Color3.fromRGB(180, 180, 200)).Text = item.desc
+
+		local buyButton = Instance.new("TextButton")
+		buyButton.Name = "Buy" .. item.id
+		buyButton.Size = UDim2.new(0, 110, 0, 34)
+		buyButton.Position = UDim2.new(1, -120, 0, 6)
+		buyButton.BackgroundColor3 = Color3.fromRGB(110, 220, 110)
+		buyButton.Font = Enum.Font.GothamBold
+		buyButton.TextSize = 15
+		buyButton.TextColor3 = Color3.fromRGB(20, 40, 20)
+		buyButton.Text = "$" .. tostring(item.baseCost)
+		buyButton.Parent = row
+		local buyCorner = Instance.new("UICorner")
+		buyCorner.CornerRadius = UDim.new(0, 8)
+		buyCorner.Parent = buyButton
+		buyButton.MouseButton1Click:Connect(function()
+			if onBuyShop then
+				onBuyShop(item.id)
+			end
+		end)
+	end
+
+	rebirthButton = Instance.new("TextButton")
+	rebirthButton.Name = "RebirthButton"
+	rebirthButton.Size = UDim2.new(1, -20, 0, 48)
+	rebirthButton.Position = UDim2.new(0, 10, 0, 312)
+	rebirthButton.BackgroundColor3 = Color3.fromRGB(170, 90, 255)
+	rebirthButton.Font = Enum.Font.GothamBold
+	rebirthButton.TextSize = 17
+	rebirthButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	rebirthButton.Text = "REBIRTH"
+	rebirthButton.Parent = shopPanel
+	local rebirthCorner = Instance.new("UICorner")
+	rebirthCorner.CornerRadius = UDim.new(0, 10)
+	rebirthCorner.Parent = rebirthButton
 	rebirthButton.MouseButton1Click:Connect(function()
-		Rebirth:FireServer()
-	end)
-	lockButton.MouseButton1Click:Connect(function()
-		LockBase:FireServer()
+		if onRebirth then
+			onRebirth()
+		end
 	end)
 end
 
--- Refresh the HUD from the latest state and world sync.
-function HUD.update(newState: any, newWorld: any)
-	state = newState or state
-	world = newWorld or world
-	if not gui then
+function HUD.setState(newState)
+	state = newState
+	if not cashLabel then
 		return
 	end
-	if state then
-		if cashLabel then
-			cashLabel.Text = "$" .. shortNumber(state.Cash)
-		end
-		if incomeLabel then
-			incomeLabel.Text = "+$" .. shortNumber(state.Income) .. "/s"
-		end
-		if rebirthLabel then
-			rebirthLabel.Text = "Rebirth x" .. string.format("%.2f", state.Multiplier) .. " (" .. tostring(state.Rebirths) .. ")"
-			-- Show the rebirth cost on the button via the prompt area is
-			-- noisy; the shop shows it instead. Keep the label short.
-		end
-		if lockLabel then
-			if state.LockLeft > 0 then
-				lockLabel.Text = "LOCKED " .. tostring(math.ceil(state.LockLeft)) .. "s"
-			else
-				lockLabel.Text = "Base open"
+	cashLabel.Text = money(state.cash)
+	incomeLabel.Text = string.format("+$%d/s", state.income)
+	if state.lockSecondsLeft > 0 then
+		statusLabel.Text = string.format("LOCKED %ds", state.lockSecondsLeft)
+		statusLabel.TextColor3 = Color3.fromRGB(255, 90, 90)
+	else
+		statusLabel.Text = string.format("Rebirth x%.2f (%d)", state.multiplier, state.rebirths)
+		statusLabel.TextColor3 = Color3.fromRGB(255, 200, 40)
+	end
+	if shopPanel and shopPanel.Visible then
+		HUD.refreshShop()
+	end
+end
+
+function HUD.refreshShop()
+	if not state then
+		return
+	end
+	for _, item in ipairs(BrainrotData.SHOP) do
+		local row = shopList:FindFirstChild("ShopRow" .. item.id)
+		if row then
+			local button = row:FindFirstChild("Buy" .. item.id)
+			if button then
+				local level = 0
+				if item.id == "Slot" then
+					level = state.slots - BrainrotData.START_SLOTS
+				elseif item.id == "Speed" then
+					level = state.speedLevel
+				elseif item.id == "Slap" then
+					level = state.slapLevel
+				elseif item.id == "Lock" then
+					level = state.lockLevel
+				elseif item.id == "Income2x" then
+					level = state.income2x and 1 or 0
+				end
+				if level >= item.maxLevel then
+					button.Text = "MAX"
+					button.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
+				else
+					button.Text = "$" .. tostring(BrainrotData.shopCost(item, level + 1))
+					button.BackgroundColor3 = Color3.fromRGB(110, 220, 110)
+				end
 			end
 		end
 	end
-	if world and tsunamiLabel then
-		if world.Tsunami == "warning" then
-			tsunamiLabel.Visible = true
-			tsunamiLabel.Text = "TSUNAMI IN " .. tostring(math.ceil(world.TsunamiIn)) .. "s — GET TO YOUR BASE!"
-		elseif world.Tsunami == "sweeping" then
-			tsunamiLabel.Visible = true
-			tsunamiLabel.Text = "TSUNAMI! HOLD ON!"
-		else
-			tsunamiLabel.Visible = false
-		end
+	if rebirthButton and state then
+		rebirthButton.Text = string.format("REBIRTH — $%d  (+25%% income)", state.rebirthCost)
 	end
 end
 
--- Set the context prompt (what E does), or hide it.
-function HUD.setPrompt(text: string?)
+function HUD.setPrompt(text)
 	if promptLabel then
-		if text and text ~= "" then
-			promptLabel.Visible = true
-			promptLabel.Text = text
-		else
-			promptLabel.Visible = false
-		end
+		promptLabel.Text = text
 	end
 end
 
-function HUD.getState(): any
-	return state
+function HUD.showToast(message)
+	if toastLabel then
+		toastLabel.Text = message
+		task.delay(4, function()
+			if toastLabel and toastLabel.Text == message then
+				toastLabel.Text = ""
+			end
+		end)
+	end
 end
 
-function HUD.getWorld(): any
-	return world
-end
-
--- Wire the sync events to the HUD.
-function HUD.listen()
-	SyncState.OnClientEvent:Connect(function(newState)
-		HUD.update(newState, nil)
-	end)
-	SyncWorld.OnClientEvent:Connect(function(newWorld)
-		HUD.update(nil, newWorld)
-	end)
+function HUD.showTsunami(phase, secondsLeft)
+	if not banner then
+		return
+	end
+	if phase == "warning" then
+		banner.Visible = true
+		bannerLabel.Text = string.format("TSUNAMI IN %ds — GET TO YOUR BASE!", secondsLeft)
+	elseif phase == "sweep" then
+		banner.Visible = true
+		bannerLabel.Text = "TSUNAMI! GET TO YOUR BASE!"
+	else
+		banner.Visible = false
+	end
 end
 
 return HUD

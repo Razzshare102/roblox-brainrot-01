@@ -1,45 +1,75 @@
-// Brainrot Bay — a Steal-a-Brainrot game for roblox-brainrot-01 (Node 22, standard library only).
-// The game is this directory's Rojo project, built into game.rbxl with
-// `rojo build default.project.json --output game.rbxl`, and the program hands it in. It copies game.rbxl,
-// src/, screenshots/ and PLAY.json from beside this file to /output and writes /output/dossier.json, the
-// summary the judge reads, with the vendored make.fun library.
-//
-// The game: a 3D island with a conveyor belt that spawns original brainrot characters, eight coloured
-// player bases in a ring, buying, stealing, slapping, base locks, a shop, rebirths, and a tsunami that
-// sweeps the island every three minutes.
-//
-// Build your game, rebuild game.rbxl, put your PNG or JPEG screenshots in screenshots/ (the first by name
-// is the cover, and one of them is the thumbnail you upload for your game on Roblox) and fill in PLAY.json
-// with your published place.
-//
-// Every name under /output starts with a letter, a digit or _ and holds only letters, digits, . _ and -: the
-// grader fails an entry whose output holds any other, so a file such as .gitkeep or .DS_Store copied in fails it.
-// So src/ and screenshots/ are copied without any name that starts with a dot, at any depth.
-//
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Brainrot Bay: hands the game in. Copies the place, the scripts, the
+// screenshots and the play link beside this file into the output
+// directory, then writes the dossier the grader checks, built from that
+// same output directory with the kit's library. Node 22, standard
+// library only. Deterministic: two runs write identical bytes.
 
-import { copyFileSync, cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { buildDossier } from './vendor/makefun-roblox.ts';
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildDossier } from "./vendor/makefun-roblox.ts";
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const HERE = dirname(fileURLToPath(import.meta.url));
+const OUT = process.env.MAKEFUN_OUTPUT_DIR || "/output";
 
-/** cpSync's filter: leave out every file and directory whose name starts with a dot (.gitkeep, .DS_Store, .git). */
-const notDotted = (path: string): boolean => !basename(path).startsWith('.');
+function copyTree(from: string, to: string): number {
+  let copied = 0;
+  mkdirSync(to, { recursive: true });
+  for (const entry of readdirSync(from)) {
+    if (entry.startsWith(".")) {
+      continue;
+    }
+    const src = join(from, entry);
+    const dst = join(to, entry);
+    if (statSync(src).isDirectory()) {
+      copied += copyTree(src, dst);
+    } else {
+      copyFileSync(src, dst);
+      copied += 1;
+    }
+  }
+  return copied;
+}
 
-copyFileSync(join(here, 'game.rbxl'), join(out, 'game.rbxl'));
-copyFileSync(join(here, 'PLAY.json'), join(out, 'PLAY.json'));
-cpSync(join(here, 'src'), join(out, 'src'), { recursive: true, filter: notDotted });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true, filter: notDotted });
+function main(): void {
+  // Fail fast with a clear message when the place has not been built yet.
+  const placePath = join(HERE, "game.rbxl");
+  if (!statSync(placePath, { throwIfNoEntry: false })) {
+    throw new Error("brainrot-bay: game.rbxl is missing; run rojo build first");
+  }
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; a place of more than 500000 instances, whose
-// scripts' sources come to over 8 MiB or whose scripts' paths come to over 1048576 characters, in all).
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, { text_max_bytes: 65536, screenshots: { max: 4, max_bytes: 262144 }, max_instances: 500000, scripts_max_source_bytes: 8388608, scripts_max_path_chars: 1048576 }),
-);
+  rmSync(OUT, { recursive: true, force: true });
+  mkdirSync(OUT, { recursive: true });
+
+  copyFileSync(join(HERE, "game.rbxl"), join(OUT, "game.rbxl"));
+
+  // The play link must name a real place and universe before it is copied.
+  const playLink = JSON.parse(readFileSync(join(HERE, "PLAY.json"), "utf8")) as {
+    url?: unknown;
+    place_id?: unknown;
+    universe_id?: unknown;
+  };
+  if (
+    typeof playLink.url !== "string" ||
+    !Number.isSafeInteger(playLink.place_id) ||
+    !Number.isSafeInteger(playLink.universe_id) ||
+    (playLink.place_id as number) <= 0 ||
+    (playLink.universe_id as number) <= 0
+  ) {
+    throw new Error("brainrot-bay: PLAY.json must name a url, place_id and universe_id");
+  }
+  copyFileSync(join(HERE, "PLAY.json"), join(OUT, "PLAY.json"));
+  const srcFiles = copyTree(join(HERE, "src"), join(OUT, "src"));
+  const shotFiles = copyTree(join(HERE, "screenshots"), join(OUT, "screenshots"));
+
+  const dossier = buildDossier(OUT, { text_max_bytes: 65536 });
+  writeFileSync(join(OUT, "dossier.json"), dossier);
+
+  const placeBytes = statSync(join(OUT, "game.rbxl")).size;
+  const dossierBytes = statSync(join(OUT, "dossier.json")).size;
+  console.log(
+    `brainrot-bay: place ${placeBytes} bytes, ${srcFiles} script files, ${shotFiles} screenshots, dossier ${dossierBytes} bytes`
+  );
+}
+
+main();

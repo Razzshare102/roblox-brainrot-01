@@ -1,285 +1,193 @@
--- Spawner: brainrots ride the central conveyor belt. A new one rolls a
--- rarity and a mutation, spawns at the west end of the belt and walks
--- east; if nobody buys it before the east end, it despawns. The belt is
--- the game's shop window: what walks past is what you can buy.
+-- Brainrot Bay: the conveyor belt through the middle of the island.
+-- Rolls a brainrot, walks it from the west gate to the east gate, and
+-- sells it to the first player who presses E beside it with enough cash.
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local BrainrotData = require(ReplicatedStorage.Shared.BrainrotData)
+local BrainrotData = require(script.Parent.Parent.Shared.BrainrotData)
+local GameState = require(script.Parent.GameState)
 
 local Spawner = {}
 
--- The belt runs along X at this height (top of the belt part) and width.
-Spawner.BELT_Y = 2
 Spawner.BELT_START_X = -38
 Spawner.BELT_END_X = 38
-Spawner.BELT_Z = 0
-Spawner.WALK_SPEED = 3 -- studs per second along the belt
-Spawner.SPAWN_EVERY = 6 -- seconds between spawns (shorter when few are out)
-Spawner.MAX_ON_BELT = 8
+Spawner.BELT_Y = 2.5
+Spawner.BELT_SPEED = 4
+Spawner.SPAWN_EVERY_SECONDS = 4
+Spawner.MAX_ON_BELT = 6
+Spawner.BUY_RANGE = 12
 
-export type BeltBrainrot = {
-	Uid: string,
-	Model: Model,
-	Def: BrainrotData.BrainrotDef,
-	Mutation: string,
-	Mult: number,
-	Price: number,
-	X: number,
-	Bought: boolean,
-}
+local beltBrainrots = {}
+local beltFolder = nil
 
-local belt: { BeltBrainrot } = {}
-local folder: Folder? = nil
-local lastSpawnAt = 0
-local beltUidCounter = 0
-
--- Weighted roll over a {Name, Weight} list. Returns the picked entry.
-local function rollWeighted(list): any
-	local total = 0
-	for _, entry in list do
-		total += entry.Weight
-	end
-	local roll = math.random() * total
-	for _, entry in list do
-		roll -= entry.Weight
-		if roll <= 0 then
-			return entry
-		end
-	end
-	return list[1]
+function Spawner.setFolder(folder)
+	beltFolder = folder
 end
 
--- Roll a rarity, then a brainrot of that rarity, then its mutation.
-function Spawner.rollBrainrot(): (BrainrotData.BrainrotDef, string, number)
-	-- RARITY_WEIGHTS is a map, so build the weighted list first.
-	local rarityList = {}
-	for name, weight in BrainrotData.RARITY_WEIGHTS do
-		table.insert(rarityList, { Name = name, Weight = weight })
-	end
-	-- Keep the ladder order so the roll is deterministic in shape.
-	table.sort(rarityList, function(a, b)
-		return BrainrotData.rarityIndex(a.Name) < BrainrotData.rarityIndex(b.Name)
-	end)
-	local rarityEntry = rollWeighted(rarityList)
-	local rarityName: string = rarityEntry.Name
-	local defs = BrainrotData.getByRarity(rarityName)
-	local def = defs[math.random(1, #defs)]
-	local mutation = rollWeighted(BrainrotData.MUTATIONS)
-	return def, mutation.Name, mutation.Mult
+function Spawner.getBeltBrainrots()
+	return beltBrainrots
 end
 
--- Build the visible brainrot: a chunky body, a head, a classic smile and
--- a name label. Built from parts only, so it needs no uploaded assets.
-local function buildModel(def: BrainrotData.BrainrotDef, mutationName: string, mult: number): Model
+-- Build the little character model: a coloured body, a head, and a
+-- floating label with its name, rarity colour and dollars per second.
+function Spawner.buildBrainrotModel(record)
+	local brainrot = BrainrotData.getBrainrot(record.brainrotId)
+	local rarity = BrainrotData.RARITIES[brainrot.rarity]
+	local mutation = BrainrotData.MUTATIONS[record.mutation]
+
 	local model = Instance.new("Model")
-	model.Name = def.Name
+	model.Name = brainrot.short
 
-	local size = def.Size
 	local body = Instance.new("Part")
 	body.Name = "Body"
 	body.Shape = Enum.PartType.Ball
-	body.Size = Vector3.new(size, size, size)
-	body.Color = def.Color
+	body.Size = Vector3.new(3, 3, 3)
+	body.Color = rarity.color
 	body.Material = Enum.Material.SmoothPlastic
 	body.Anchored = true
 	body.CanCollide = false
 	body.Parent = model
 
-	-- A little head on top, so it reads as a character, not a ball.
 	local head = Instance.new("Part")
 	head.Name = "Head"
 	head.Shape = Enum.PartType.Ball
-	head.Size = Vector3.new(size * 0.62, size * 0.62, size * 0.62)
-	head.Color = def.Color
+	head.Size = Vector3.new(1.8, 1.8, 1.8)
+	head.Color = Color3.fromRGB(255, 220, 170)
 	head.Material = Enum.Material.SmoothPlastic
 	head.Anchored = true
 	head.CanCollide = false
-	head.Position = Vector3.new(0, size * 0.72, 0)
 	head.Parent = model
 
-	-- Eyes and a smile, drawn as small parts on the head.
-	local eyeColor = Color3.fromRGB(30, 30, 30)
-	for _, x in { -0.16, 0.16 } do
-		local eye = Instance.new("Part")
-		eye.Name = "Eye"
-		eye.Shape = Enum.PartType.Ball
-		eye.Size = Vector3.new(size * 0.1, size * 0.14, size * 0.05)
-		eye.Color = eyeColor
-		eye.Material = Enum.Material.SmoothPlastic
-		eye.Anchored = true
-		eye.CanCollide = false
-		eye.Position = Vector3.new(x * size, size * 0.78, size * 0.3)
-		eye.Parent = model
-	end
-	local mouth = Instance.new("Part")
-	mouth.Name = "Mouth"
-	mouth.Size = Vector3.new(size * 0.24, size * 0.05, size * 0.05)
-	mouth.Color = eyeColor
-	mouth.Material = Enum.Material.SmoothPlastic
-	mouth.Anchored = true
-	mouth.CanCollide = false
-	mouth.Position = Vector3.new(0, size * 0.58, size * 0.3)
-	mouth.Parent = model
+	local eyes = Instance.new("Decal")
+	eyes.Name = "Face"
+	eyes.Texture = "rbxasset://textures/face.png"
+	eyes.Face = Enum.NormalId.Front
+	eyes.Parent = head
 
-	-- Mutation crown: a small gold/diamond star above mutated brainrots.
-	if mult > 1 then
-		local star = Instance.new("Part")
-		star.Name = "MutationStar"
-		star.Size = Vector3.new(size * 0.3, size * 0.3, size * 0.1)
-		star.Color = Color3.fromRGB(255, 210, 60)
-		star.Material = Enum.Material.Neon
-		star.Anchored = true
-		star.CanCollide = false
-		star.Position = Vector3.new(0, size * 1.15, 0)
-		star.Parent = model
+	-- A golden, diamond or better brainrot glows: its body is neon and
+	-- it carries a sparkle so players can spot it from across the plaza.
+	if record.mutation ~= "Normal" then
+		body.Material = Enum.Material.Neon
+		local sparkles = Instance.new("ParticleEmitter")
+		sparkles.Name = "MutationSparkles"
+		sparkles.Color = ColorSequence.new(mutation.color)
+		sparkles.Rate = 6
+		sparkles.Lifetime = NumberRange.new(0.6)
+		sparkles.Speed = NumberRange.new(1)
+		sparkles.Size = NumberSequence.new(0.5)
+		sparkles.Parent = body
 	end
 
-	-- The label the player reads: name, rarity, mutation and $/sec.
 	local label = Instance.new("BillboardGui")
 	label.Name = "BrainrotLabel"
-	label.Size = UDim2.fromOffset(140, 52)
-	label.StudsOffset = Vector3.new(0, size * 1.45, 0)
+	label.Size = UDim2.new(0, 140, 0, 44)
+	label.StudsOffset = Vector3.new(0, 3.5, 0)
 	label.AlwaysOnTop = true
 	label.Parent = model
 
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Name = "Name"
-	nameLabel.Size = UDim2.fromScale(1, 0.4)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Text = def.Name
-	nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-	nameLabel.TextScaled = true
-	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.Parent = label
+	local nameTag = Instance.new("TextLabel")
+	nameTag.Name = "NameTag"
+	nameTag.Size = UDim2.new(1, 0, 0.55, 0)
+	nameTag.BackgroundTransparency = 1
+	nameTag.Font = Enum.Font.GothamBold
+	nameTag.TextSize = 15
+	nameTag.TextColor3 = Color3.fromRGB(255, 255, 255)
+	nameTag.TextStrokeTransparency = 0
+	nameTag.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	nameTag.Text = BrainrotData.labelText(brainrot, record.mutation)
+	nameTag.Parent = label
 
-	local rarityLabel = Instance.new("TextLabel")
-	rarityLabel.Name = "Rarity"
-	rarityLabel.Position = UDim2.fromScale(0, 0.4)
-	rarityLabel.Size = UDim2.fromScale(1, 0.3)
-	rarityLabel.BackgroundTransparency = 1
-	local rarityText = def.Rarity
-	if mutationName ~= "Normal" then
-		rarityText = mutationName .. " " .. def.Rarity
-	end
-	rarityLabel.Text = rarityText
-	rarityLabel.TextColor3 = BrainrotData.RARITY_COLORS[def.Rarity]
-	rarityLabel.TextScaled = true
-	rarityLabel.Font = Enum.Font.GothamBold
-	rarityLabel.Parent = label
+	local rateTag = Instance.new("TextLabel")
+	rateTag.Name = "RateTag"
+	rateTag.Size = UDim2.new(1, 0, 0.45, 0)
+	rateTag.Position = UDim2.new(0, 0, 0.55, 0)
+	rateTag.BackgroundTransparency = 1
+	rateTag.Font = Enum.Font.GothamBold
+	rateTag.TextSize = 14
+	rateTag.TextColor3 = rarity.color
+	rateTag.TextStrokeTransparency = 0
+	rateTag.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	rateTag.Text = string.format("$%d/s", BrainrotData.baseIncome(brainrot, record.mutation))
+	rateTag.Parent = label
 
-	local rateLabel = Instance.new("TextLabel")
-	rateLabel.Name = "Rate"
-	rateLabel.Position = UDim2.fromScale(0, 0.7)
-	rateLabel.Size = UDim2.fromScale(1, 0.3)
-	rateLabel.BackgroundTransparency = 1
-	rateLabel.Text = "$" .. tostring(def.Rate * mult) .. "/s  •  $" .. tostring(def.Price)
-	rateLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
-	rateLabel.TextScaled = true
-	rateLabel.Font = Enum.Font.GothamBold
-	rateLabel.Parent = label
-
+	model:SetAttribute("InstanceId", record.instanceId)
+	model:SetAttribute("BrainrotId", record.brainrotId)
+	model:SetAttribute("Mutation", record.mutation)
 	model.PrimaryPart = body
 	return model
 end
 
--- Spawn one brainrot on the belt and return its record.
-function Spawner.spawnOne(): BeltBrainrot?
-	if #belt >= Spawner.MAX_ON_BELT then
+function Spawner.spawnBrainrot()
+	if #beltBrainrots >= Spawner.MAX_ON_BELT then
 		return nil
 	end
-	local def, mutationName, mult = Spawner.rollBrainrot()
-	local model = buildModel(def, mutationName, mult)
-	model:PivotTo(CFrame.new(Spawner.BELT_START_X, Spawner.BELT_Y + def.Size * 0.5, Spawner.BELT_Z))
-	model.Parent = folder
-	beltUidCounter += 1
-	local record: BeltBrainrot = {
-		Uid = "belt" .. tostring(beltUidCounter),
-		Model = model,
-		Def = def,
-		Mutation = mutationName,
-		Mult = mult,
-		Price = def.Price,
-		X = Spawner.BELT_START_X,
-		Bought = false,
+	local brainrot, mutation = BrainrotData.rollBrainrot()
+	local record = {
+		instanceId = GameState.newBrainrotId(),
+		brainrotId = brainrot.id,
+		mutation = mutation,
 	}
-	table.insert(belt, record)
+	local model = Spawner.buildBrainrotModel(record)
+	model:PivotTo(CFrame.new(Spawner.BELT_START_X, Spawner.BELT_Y + 1.5, 0))
+	model.Parent = beltFolder
+	table.insert(beltBrainrots, { record = record, model = model })
 	return record
 end
 
--- Move every brainrot along the belt; despawn ones that reach the end.
-function Spawner.step(dt: number)
-	for i = #belt, 1, -1 do
-		local record = belt[i]
-		if record.Bought then
-			table.remove(belt, i)
+-- Walk every brainrot along the belt; the ones that reach the east gate
+-- wander off and despawn.
+function Spawner.stepBelt(dt)
+	for index = #beltBrainrots, 1, -1 do
+		local entry = beltBrainrots[index]
+		local model = entry.model
+		if not model or not model.Parent then
+			table.remove(beltBrainrots, index)
 		else
-			record.X += Spawner.WALK_SPEED * dt
-			local pivot = record.Model:GetPivot()
-			record.Model:PivotTo(CFrame.new(record.X, pivot.Position.Y, Spawner.BELT_Z))
-			if record.X >= Spawner.BELT_END_X then
-				record.Model:Destroy()
-				table.remove(belt, i)
+			local pivot = model:GetPivot()
+			local nextX = pivot.Position.X + Spawner.BELT_SPEED * dt
+			if nextX >= Spawner.BELT_END_X then
+				model:Destroy()
+				table.remove(beltBrainrots, index)
+			else
+				model:PivotTo(CFrame.new(nextX, pivot.Position.Y, pivot.Position.Z))
 			end
 		end
 	end
-	-- Keep the belt stocked: spawn faster when it is empty.
-	local now = os.clock()
-	local interval = Spawner.SPAWN_EVERY
-	if #belt <= 2 then
-		interval = 3
-	end
-	if now - lastSpawnAt >= interval then
-		lastSpawnAt = now
-		Spawner.spawnOne()
-	end
 end
 
--- The belt brainrot nearest to a point, within maxDistance studs.
-function Spawner.nearestTo(position: Vector3, maxDistance: number): BeltBrainrot?
-	local best: BeltBrainrot? = nil
-	local bestDist = maxDistance
-	for _, record in belt do
-		if not record.Bought then
-			local dist = (record.Model:GetPivot().Position - position).Magnitude
-			if dist < bestDist then
-				bestDist = dist
-				best = record
-			end
+function Spawner.findBeltBrainrot(instanceId)
+	for _, entry in ipairs(beltBrainrots) do
+		if entry.record.instanceId == instanceId then
+			return entry
 		end
 	end
-	return best
+	return nil
 end
 
--- Mark a belt brainrot bought and remove its model from the belt.
-function Spawner.takeBought(record: BeltBrainrot)
-	record.Bought = true
-	record.Model:Destroy()
-	for i, other in belt do
-		if other == record then
-			table.remove(belt, i)
+function Spawner.removeBeltBrainrot(entry)
+	for index, other in ipairs(beltBrainrots) do
+		if other == entry then
+			table.remove(beltBrainrots, index)
 			break
 		end
 	end
+	if entry.model then
+		entry.model:Destroy()
+	end
 end
 
-function Spawner.getBelt(): { BeltBrainrot }
-	return belt
-end
-
-function Spawner.init(parent: Folder)
-	folder = Instance.new("Folder")
-	folder.Name = "BeltBrainrots"
-	folder.Parent = parent
-	-- Seed the belt so the first player sees brainrots right away.
-	for _ = 1, 4 do
-		Spawner.spawnOne()
+function Spawner.nearestBeltBrainrot(position, maxDistance)
+	local nearest = nil
+	local nearestDistance = maxDistance
+	for _, entry in ipairs(beltBrainrots) do
+		local model = entry.model
+		if model and model.PrimaryPart then
+			local distance = (model.PrimaryPart.Position - position).Magnitude
+			if distance < nearestDistance then
+				nearestDistance = distance
+				nearest = entry
+			end
+		end
 	end
-	-- Spread the seeded ones along the belt.
-	for i, record in belt do
-		record.X = Spawner.BELT_START_X + (i - 1) * 14
-		record.Model:PivotTo(CFrame.new(record.X, Spawner.BELT_Y + record.Def.Size * 0.5, Spawner.BELT_Z))
-	end
-	lastSpawnAt = os.clock()
+	return nearest, nearestDistance
 end
 
 return Spawner

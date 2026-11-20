@@ -1,102 +1,90 @@
--- Shop: spend cash on upgrades. Everything here is bought with the
--- money brainrots earn, so the shop is the game's progression sink:
--- more slots, faster feet, a harder slap, a longer lock, and a burst
--- of double income. Prices rise per level so the choice stays real.
+-- Brainrot Bay: the shop. Five upgrades, bought with the cash your
+-- brainrots earn. Prices rise one step per level you already own.
 
+local BrainrotData = require(script.Parent.Parent.Shared.BrainrotData)
 local GameState = require(script.Parent.GameState)
-local BrainrotData = require(game:GetService("ReplicatedStorage").Shared.BrainrotData)
 
 local Shop = {}
 
-export type ShopItem = {
-	Id: string,
-	Name: string,
-	Desc: string,
-	Price: number,
-	MaxLevel: number,
-}
-
--- The shop list lives in BrainrotData (shared) so the client draws the
--- same items the server prices. Price is the cost of the first level;
--- it doubles per level.
-Shop.ITEMS = BrainrotData.SHOP_ITEMS
-
--- The level a player has of an item, from their state.
-function Shop.levelOf(state: GameState.PlayerState, itemId: string): number
-	if itemId == "slot" then
-		return state.Slots - GameState.START_SLOTS
-	elseif itemId == "speed" then
-		return state.SpeedLevel
-	elseif itemId == "slap" then
-		return state.SlapLevel
-	elseif itemId == "lock" then
-		-- Lock level is stored as extra lock seconds / 30.
-		return state.LockExtraLevel or 0
+function Shop.levelOf(state, itemId)
+	if itemId == "Slot" then
+		return state.slots - BrainrotData.START_SLOTS
+	elseif itemId == "Speed" then
+		return state.speedLevel
+	elseif itemId == "Slap" then
+		return state.slapLevel
+	elseif itemId == "Lock" then
+		return state.lockLevel
+	elseif itemId == "Income2x" then
+		return state.income2x and 1 or 0
 	end
 	return 0
 end
 
--- Price of the next level of an item for this player.
-function Shop.priceOf(state: GameState.PlayerState, item: ShopItem): number
-	local level = Shop.levelOf(state, item.Id)
-	return item.Price * (2 ^ level)
+function Shop.nextCost(state, item)
+	local level = Shop.levelOf(state, item.id)
+	return BrainrotData.shopCost(item, level + 1)
 end
 
--- Buy an item. Returns true when it worked, false when the player
--- cannot afford it or is already maxed out.
-function Shop.buy(player: Player, itemId: string): boolean
-	local state = GameState.get(player)
+-- Buy one level of a shop item. Returns ok and a message for the player.
+function Shop.buyItem(player, itemId)
+	local state = GameState.getState(player)
 	if not state then
-		return false
+		return false, "No state."
 	end
-	local item: ShopItem? = nil
-	for _, entry in Shop.ITEMS do
-		if entry.Id == itemId then
-			item = entry
-			break
-		end
-	end
+	local item = BrainrotData.shopItem(itemId)
 	if not item then
-		return false
+		return false, "No such item."
 	end
 	local level = Shop.levelOf(state, itemId)
-	if level >= item.MaxLevel then
-		return false
+	if level >= item.maxLevel then
+		return false, item.name .. " is maxed out."
 	end
-	local price = Shop.priceOf(state, item)
-	if state.Cash < price then
-		return false
+	local cost = BrainrotData.shopCost(item, level + 1)
+	if state.cash < cost then
+		return false, string.format("You need $%d for %s.", cost, item.name)
 	end
-	state.Cash -= price
-	if itemId == "slot" then
-		state.Slots += 1
-	elseif itemId == "speed" then
-		state.SpeedLevel += 1
+	state.cash -= cost
+	if itemId == "Slot" then
+		state.slots += 1
+	elseif itemId == "Speed" then
+		state.speedLevel += 1
 		local character = player.Character
-		if character then
-			local humanoid = character:FindFirstChildOfClass("Humanoid")
-			if humanoid then
-				local carrying = state.Carrying ~= nil
-				local base = 16
-				if carrying then
-					base = 8
-				end
-				humanoid.WalkSpeed = base + 2 * state.SpeedLevel
-			end
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid.WalkSpeed = 16 + 2 * state.speedLevel
 		end
-	elseif itemId == "slap" then
-		state.SlapLevel += 1
-	elseif itemId == "lock" then
-		state.LockExtraLevel = (state.LockExtraLevel or 0) + 1
-	elseif itemId == "boost" then
-		state.BoostUntil = os.clock() + 60
+	elseif itemId == "Slap" then
+		state.slapLevel += 1
+	elseif itemId == "Lock" then
+		state.lockLevel += 1
+	elseif itemId == "Income2x" then
+		state.income2x = true
 	end
-	return true
+	return true, string.format("Bought %s for $%d.", item.name, cost)
 end
 
--- Lock seconds for this player (base 60 plus 30 per lock level).
-function Shop.lockSeconds(state: GameState.PlayerState): number
-	return GameState.LOCK_SECONDS + 30 * (state.LockExtraLevel or 0)
+-- Rebirth: pay the cost, lose your cash and brainrots, keep a permanent
+-- +25% income multiplier for every rebirth you have done.
+function Shop.doRebirth(player)
+	local state = GameState.getState(player)
+	if not state then
+		return false, "No state."
+	end
+	local cost = BrainrotData.rebirthCost(state.rebirths)
+	if state.cash < cost then
+		return false, string.format("Rebirth costs $%d. Keep earning.", cost)
+	end
+	-- Clear the brainrot models off the base first.
+	local StealSystem = require(script.Parent.StealSystem)
+	for slotIndex, _ in pairs(state.brainrots) do
+		StealSystem.removeBaseModel(player.UserId, slotIndex)
+	end
+	local ok, spent = GameState.applyRebirth(state)
+	if not ok then
+		return false, "Rebirth failed."
+	end
+	return true, string.format("Reborn! Income is now x%.2f forever.", GameState.rebirthMultiplier(state))
 end
 
 return Shop

@@ -1,301 +1,172 @@
--- BrainrotData: the cast of Brainrot Bay. One table per brainrot: its name,
--- rarity, base money per second, body color, size and a one-line joke.
--- The server spawns these on the conveyor; the client shows them in the
--- shop, the labels and the index. All characters are original creations
--- for this game, not copies of any other game's cast.
+-- Brainrot Bay: the cast, rarities, mutations and shop.
+-- Shared by the server (spawning, income) and the client (labels, shop UI).
+-- Every name and rate here is the game's design: keep them in sync with README.md.
 
 local BrainrotData = {}
 
-export type RarityName = "Common" | "Rare" | "Epic" | "Legendary" | "Mythic" | "Brainrot God"
-
-export type BrainrotDef = {
-	Id: string,
-	Name: string,
-	Rarity: RarityName,
-	Rate: number, -- money per second at mutation x1
-	Color: Color3,
-	Size: number, -- body stud height
-	Price: number, -- cash to buy one
-	Blurb: string,
-}
-
--- Rarity ladder, cheapest first. Price is roughly Rate x 100 so a brainrot
--- pays for itself in about 100 seconds of ticking.
+-- Rarities, rarest last. weight is the spawn weight out of 100.
 BrainrotData.RARITIES = {
-	"Common",
-	"Rare",
-	"Epic",
-	"Legendary",
-	"Mythic",
-	"Brainrot God",
+	Common = { order = 1, color = Color3.fromRGB(120, 200, 90), weight = 50 },
+	Rare = { order = 2, color = Color3.fromRGB(70, 140, 255), weight = 25 },
+	Epic = { order = 3, color = Color3.fromRGB(170, 90, 255), weight = 13 },
+	Legendary = { order = 4, color = Color3.fromRGB(255, 160, 40), weight = 7 },
+	Mythic = { order = 5, color = Color3.fromRGB(255, 70, 120), weight = 3.5 },
+	BrainrotGod = { order = 6, color = Color3.fromRGB(90, 230, 230), weight = 1.5 },
 }
 
-BrainrotData.RARITY_COLORS = {
-	Common = Color3.fromRGB(180, 180, 180),
-	Rare = Color3.fromRGB(80, 170, 255),
-	Epic = Color3.fromRGB(170, 90, 255),
-	Legendary = Color3.fromRGB(255, 190, 40),
-	Mythic = Color3.fromRGB(255, 80, 140),
-	["Brainrot God"] = Color3.fromRGB(255, 240, 120),
+BrainrotData.RARITY_ORDER = { "Common", "Rare", "Epic", "Legendary", "Mythic", "BrainrotGod" }
+
+BrainrotData.RARITY_LABELS = {
+	Common = "Common",
+	Rare = "Rare",
+	Epic = "Epic",
+	Legendary = "Legendary",
+	Mythic = "Mythic",
+	BrainrotGod = "Brainrot God",
 }
 
--- Spawn weights: how likely each rarity is to roll on the belt.
-BrainrotData.RARITY_WEIGHTS = {
-	Common = 52,
-	Rare = 26,
-	Epic = 13,
-	Legendary = 6,
-	Mythic = 2.4,
-	["Brainrot God"] = 0.6,
-}
-
-BrainrotData.DEFS = {
-	-- Common: the everyday weirdos.
-	{
-		Id = "noodle-cat",
-		Name = "Noodle Cat",
-		Rarity = "Common",
-		Rate = 5,
-		Color = Color3.fromRGB(255, 200, 120),
-		Size = 2.2,
-		Price = 500,
-		Blurb = "A cat made of noodles. Slurps itself when nervous.",
-	},
-	{
-		Id = "pickle-pal",
-		Name = "Pickle Pal",
-		Rarity = "Common",
-		Rate = 6,
-		Color = Color3.fromRGB(120, 200, 80),
-		Size = 2.2,
-		Price = 600,
-		Blurb = "A pickle with big dreams and zero chill.",
-	},
-	{
-		Id = "sock-puppet",
-		Name = "Sock Puppet",
-		Rarity = "Common",
-		Rate = 7,
-		Color = Color3.fromRGB(200, 120, 200),
-		Size = 2.4,
-		Price = 700,
-		Blurb = "Talks back. Mostly about feet.",
-	},
-	-- Rare: getting strange.
-	{
-		Id = "disco-pigeon",
-		Name = "Disco Pigeon",
-		Rarity = "Rare",
-		Rate = 15,
-		Color = Color3.fromRGB(120, 140, 255),
-		Size = 2.6,
-		Price = 1500,
-		Blurb = "Never stops dancing. Neither does your wallet.",
-	},
-	{
-		Id = "toaster-shark",
-		Name = "Toaster Shark",
-		Rarity = "Rare",
-		Rate = 18,
-		Color = Color3.fromRGB(220, 220, 230),
-		Size = 2.8,
-		Price = 1800,
-		Blurb = "Toasty on the outside, shark on the inside.",
-	},
-	{
-		Id = "traffic-cone-dog",
-		Name = "Traffic Cone Dog",
-		Rarity = "Rare",
-		Rate = 20,
-		Color = Color3.fromRGB(255, 130, 40),
-		Size = 2.6,
-		Price = 2000,
-		Blurb = "Directs traffic. Charges for it.",
-	},
-	-- Epic: the bay's celebrities.
-	{
-		Id = "dj-banana",
-		Name = "DJ Banana",
-		Rarity = "Epic",
-		Rate = 40,
-		Color = Color3.fromRGB(255, 220, 40),
-		Size = 3.0,
-		Price = 4000,
-		Blurb = "Drops beats and drops the bass. Never peels out.",
-	},
-	{
-		Id = "couch-potato-king",
-		Name = "Couch Potato King",
-		Rarity = "Epic",
-		Rate = 45,
-		Color = Color3.fromRGB(150, 100, 60),
-		Size = 3.2,
-		Price = 4500,
-		Blurb = "Rules the living room from a recliner of gold.",
-	},
-	{
-		Id = "lawn-flamingo",
-		Name = "Lawn Flamingo",
-		Rarity = "Epic",
-		Rate = 50,
-		Color = Color3.fromRGB(255, 120, 180),
-		Size = 3.0,
-		Price = 5000,
-		Blurb = "Stands on one leg. Owns the whole lawn.",
-	},
-	-- Legendary: rare sightings.
-	{
-		Id = "astronaut-llama",
-		Name = "Astronaut Llama",
-		Rarity = "Legendary",
-		Rate = 100,
-		Color = Color3.fromRGB(200, 220, 255),
-		Size = 3.4,
-		Price = 10000,
-		Blurb = "Spits in zero gravity. It still lands.",
-	},
-	{
-		Id = "wizard-frog",
-		Name = "Wizard Frog",
-		Rarity = "Legendary",
-		Rate = 120,
-		Color = Color3.fromRGB(80, 200, 120),
-		Size = 3.2,
-		Price = 12000,
-		Blurb = "Ribbitus Maximus. Turns coins into more coins.",
-	},
-	{
-		Id = "turbo-turtle",
-		Name = "Turbo Turtle",
-		Rarity = "Legendary",
-		Rate = 140,
-		Color = Color3.fromRGB(90, 180, 90),
-		Size = 3.4,
-		Price = 14000,
-		Blurb = "The fastest slow animal in the bay.",
-	},
-	-- Mythic: almost a rumor.
-	{
-		Id = "golden-goose-prime",
-		Name = "Golden Goose Prime",
-		Rarity = "Mythic",
-		Rate = 300,
-		Color = Color3.fromRGB(255, 210, 60),
-		Size = 3.8,
-		Price = 30000,
-		Blurb = "Lays golden eggs. Charges rent for the nest.",
-	},
-	{
-		Id = "cyber-unicorn",
-		Name = "Cyber Unicorn",
-		Rarity = "Mythic",
-		Rate = 350,
-		Color = Color3.fromRGB(140, 220, 255),
-		Size = 3.8,
-		Price = 35000,
-		Blurb = "Half horse, half Wi-Fi. Fully fabulous.",
-	},
-	-- Brainrot God: the top of the ladder.
-	{
-		Id = "sir-reginald",
-		Name = "Sir Reginald III",
-		Rarity = "Brainrot God",
-		Rate = 1000,
-		Color = Color3.fromRGB(255, 240, 150),
-		Size = 4.4,
-		Price = 100000,
-		Blurb = "A top hat with a monocle and a trust fund.",
-	},
-	{
-		Id = "infinite-sandwich",
-		Name = "The Infinite Sandwich",
-		Rarity = "Brainrot God",
-		Rate = 1200,
-		Color = Color3.fromRGB(230, 180, 120),
-		Size = 4.4,
-		Price = 120000,
-		Blurb = "Every bite regrows. Every crumb is cash.",
-	},
-}
-
--- Mutations multiply a brainrot's money per second. Rolled when it spawns.
+-- Mutations multiply a brainrot's income. weight is the roll weight out of 100.
 BrainrotData.MUTATIONS = {
-	{ Name = "Normal", Mult = 1, Weight = 70, Color = Color3.fromRGB(255, 255, 255) },
-	{ Name = "Golden", Mult = 2, Weight = 18, Color = Color3.fromRGB(255, 210, 60) },
-	{ Name = "Diamond", Mult = 4, Weight = 8, Color = Color3.fromRGB(140, 220, 255) },
-	{ Name = "Rainbow", Mult = 8, Weight = 3.2, Color = Color3.fromRGB(255, 120, 200) },
-	{ Name = "Galactic", Mult = 15, Weight = 0.8, Color = Color3.fromRGB(170, 90, 255) },
+	Normal = { mult = 1, color = Color3.fromRGB(255, 255, 255), weight = 70 },
+	Golden = { mult = 2, color = Color3.fromRGB(255, 215, 0), weight = 18 },
+	Diamond = { mult = 4, color = Color3.fromRGB(120, 220, 255), weight = 7 },
+	Rainbow = { mult = 8, color = Color3.fromRGB(255, 120, 220), weight = 3.5 },
+	Galactic = { mult = 15, color = Color3.fromRGB(160, 90, 255), weight = 1.5 },
 }
 
--- The shop list, shared so the client can draw it and the server can
--- price it. Price is the cost of the first level; it doubles per level.
-BrainrotData.SHOP_ITEMS = {
-	{
-		Id = "slot",
-		Name = "Base Slot",
-		Desc = "One more brainrot fits on your base.",
-		Price = 500,
-		MaxLevel = 3,
-	},
-	{
-		Id = "speed",
-		Name = "Speed Boots",
-		Desc = "+2 WalkSpeed. Outrun the wave.",
-		Price = 300,
-		MaxLevel = 3,
-	},
-	{
-		Id = "slap",
-		Name = "Slap Power",
-		Desc = "+10 slap knockback.",
-		Price = 200,
-		MaxLevel = 3,
-	},
-	{
-		Id = "lock",
-		Name = "Longer Lock",
-		Desc = "+30s of base lock.",
-		Price = 400,
-		MaxLevel = 2,
-	},
-	{
-		Id = "boost",
-		Name = "2x Income (60s)",
-		Desc = "Double money per second for one minute.",
-		Price = 1000,
-		MaxLevel = 99,
-	},
+BrainrotData.MUTATION_ORDER = { "Normal", "Golden", "Diamond", "Rainbow", "Galactic" }
+
+-- The cast: 15 original brainrots. rate is dollars per second.
+-- short is the name the floating label over the character shows.
+BrainrotData.BRAINROTS = {
+	{ id = "TungTungSahur", name = "Tung Tung Sahur", short = "Tung Tung", rarity = "Common", rate = 12 },
+	{ id = "BrrBrrPatapim", name = "Brr Brr Patapim", short = "Brr Brr", rarity = "Common", rate = 9 },
+	{ id = "TralaleroTralala", name = "Tralalero Tralala", short = "Tralala", rarity = "Rare", rate = 48 },
+	{ id = "ChimpanziniBananini", name = "Chimpanzini Bananini", short = "Bananini", rarity = "Rare", rate = 35 },
+	{ id = "CappuccinoAssassino", name = "Cappuccino Assassino", short = "Cappuccino", rarity = "Epic", rate = 95 },
+	{ id = "LiriliLarila", name = "Lirili Larila", short = "Lirili", rarity = "Epic", rate = 120 },
+	{ id = "BonecaAmbalabu", name = "Boneca Ambalabu", short = "Boneca", rarity = "Epic", rate = 140 },
+	{ id = "LaVacaSaturno", name = "La Vaca Saturno", short = "La Vaca", rarity = "Legendary", rate = 260 },
+	{ id = "ChimpanziniBananiniPrime", name = "Chimpanzini Bananini", short = "Bananini", rarity = "Legendary", rate = 260 },
+	{ id = "FrigoCamelo", name = "Frigo Camelo", short = "Frigo", rarity = "Legendary", rate = 310 },
+	{ id = "GiraffaCeleste", name = "Giraffa Celeste", short = "Giraffa", rarity = "Mythic", rate = 520 },
+	{ id = "LosTralaleritos", name = "Los Tralaleritos", short = "Tralaleritos", rarity = "Mythic", rate = 640 },
+	{ id = "Matteo", name = "Matteo", short = "Matteo", rarity = "Mythic", rate = 780 },
+	{ id = "GraipussMedussi", name = "Graipuss Medussi", short = "Graipuss", rarity = "Brainrot God", rate = 1500 },
+	{ id = "LosCrocodillitos", name = "Los Crocodillitos", short = "Crocodillitos", rarity = "Brainrot God", rate = 2200 },
 }
 
--- Look a brainrot up by its id. Returns nil for an unknown id.
-function BrainrotData.getById(id: string): BrainrotDef?
-	for _, def in BrainrotData.DEFS do
-		if def.Id == id then
-			return def
+-- The shop: five upgrades. cost for level n is baseCost * n.
+BrainrotData.SHOP = {
+	{ id = "Slot", name = "Extra Base Slot", desc = "+1 brainrot slot on your base", baseCost = 300, maxLevel = 3 },
+	{ id = "Speed", name = "Speed Boost", desc = "+2 walk speed", baseCost = 400, maxLevel = 5 },
+	{ id = "Slap", name = "Slap Power", desc = "Slap hits harder and further", baseCost = 300, maxLevel = 5 },
+	{ id = "Lock", name = "Longer Lock", desc = "+30s base lock time", baseCost = 350, maxLevel = 3 },
+	{ id = "Income2x", name = "2x Income", desc = "Double all brainrot income, forever", baseCost = 1500, maxLevel = 1 },
+}
+
+BrainrotData.START_SLOTS = 3
+BrainrotData.MAX_SLOTS = 6
+BrainrotData.LOCK_SECONDS = 60
+BrainrotData.LOCK_COOLDOWN_SECONDS = 120
+BrainrotData.REBIRTH_BASE_COST = 10000
+BrainrotData.REBIRTH_MULT_PER = 0.25
+
+function BrainrotData.getBrainrot(id)
+	for _, brainrot in ipairs(BrainrotData.BRAINROTS) do
+		if brainrot.id == id then
+			return brainrot
 		end
 	end
 	return nil
 end
 
--- All definitions of one rarity, in ladder order.
-function BrainrotData.getByRarity(rarity: RarityName): { BrainrotDef }
+function BrainrotData.brainrotsOfRarity(rarity)
 	local out = {}
-	for _, def in BrainrotData.DEFS do
-		if def.Rarity == rarity then
-			table.insert(out, def)
+	for _, brainrot in ipairs(BrainrotData.BRAINROTS) do
+		if brainrot.rarity == rarity then
+			table.insert(out, brainrot)
 		end
 	end
 	return out
 end
 
--- The 1-based index of a rarity on the ladder (Common = 1).
-function BrainrotData.rarityIndex(rarity: RarityName): number
-	for i, name in BrainrotData.RARITIES do
-		if name == rarity then
-			return i
+local function rollWeighted(entries)
+	local total = 0
+	for _, entry in ipairs(entries) do
+		total += entry.weight
+	end
+	local roll = math.random() * total
+	for _, entry in ipairs(entries) do
+		roll -= entry.weight
+		if roll <= 0 then
+			return entry.key
 		end
 	end
-	return 1
+	return entries[1].key
+end
+
+function BrainrotData.rollRarity()
+	local entries = {}
+	for _, key in ipairs(BrainrotData.RARITY_ORDER) do
+		table.insert(entries, { key = key, weight = BrainrotData.RARITIES[key].weight })
+	end
+	return rollWeighted(entries)
+end
+
+function BrainrotData.rollMutation()
+	local entries = {}
+	for _, key in ipairs(BrainrotData.MUTATION_ORDER) do
+		table.insert(entries, { key = key, weight = BrainrotData.MUTATIONS[key].weight })
+	end
+	return rollWeighted(entries)
+end
+
+function BrainrotData.rollBrainrot()
+	local rarity = BrainrotData.rollRarity()
+	local pool = BrainrotData.brainrotsOfRarity(rarity)
+	local brainrot = pool[math.random(1, #pool)]
+	local mutation = BrainrotData.rollMutation()
+	return brainrot, mutation
+end
+
+-- Dollars per second a brainrot earns, before rebirth and shop multipliers.
+function BrainrotData.baseIncome(brainrot, mutation)
+	local mult = BrainrotData.MUTATIONS[mutation].mult
+	return brainrot.rate * mult
+end
+
+-- What a brainrot costs off the belt: one second of its income.
+function BrainrotData.buyCost(brainrot)
+	return brainrot.rate
+end
+
+function BrainrotData.shopItem(id)
+	for _, item in ipairs(BrainrotData.SHOP) do
+		if item.id == id then
+			return item
+		end
+	end
+	return nil
+end
+
+function BrainrotData.shopCost(item, level)
+	return item.baseCost * level
+end
+
+function BrainrotData.rebirthCost(rebirths)
+	return BrainrotData.REBIRTH_BASE_COST * (rebirths + 1)
+end
+
+function BrainrotData.rebirthMultiplier(rebirths)
+	return 1 + BrainrotData.REBIRTH_MULT_PER * rebirths
+end
+
+function BrainrotData.labelText(brainrot, mutation)
+	if mutation == "Normal" then
+		return brainrot.short
+	end
+	return mutation .. " " .. brainrot.short
 end
 
 return BrainrotData

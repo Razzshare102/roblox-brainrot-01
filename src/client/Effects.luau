@@ -1,67 +1,92 @@
--- Effects: the little moments of feedback — a chime when you buy, a
--- thud when you slap, a fanfare on rebirth, and a burst of sparkles
--- where it happened. All of it is client-side and cosmetic; the server
--- never depends on it. Sounds use Roblox's built-in asset ids, so they
--- need no upload.
+-- Brainrot Bay: buy, steal, slap and rebirth feedback on the client.
+-- Visual only: a sparkle burst and a floating label, so the player sees
+-- the moment something happens. No sound assets are needed.
+
+local TweenService = game:GetService("TweenService")
 
 local Effects = {}
 
--- Play a short built-in sound at a position.
-local function playSound(soundId: string, volume: number)
-	local sound = Instance.new("Sound")
-	sound.SoundId = soundId
-	sound.Volume = volume
-	sound.Parent = game:GetService("Workspace")
-	sound:Play()
-	-- Clean it up once it finishes.
-	sound.Ended:Connect(function()
-		sound:Destroy()
-	end)
-end
+-- A burst of coloured sparks at a world position, gone in two seconds.
+function Effects.burst(position, color)
+	local anchor = Instance.new("Part")
+	anchor.Name = "EffectBurst"
+	anchor.Size = Vector3.new(0.5, 0.5, 0.5)
+	anchor.Transparency = 1
+	anchor.Anchored = true
+	anchor.CanCollide = false
+	anchor.CFrame = CFrame.new(position)
+	anchor.Parent = workspace
 
--- A burst of sparkles at a point.
-local function sparkle(position: Vector3, color: Color3)
-	local part = Instance.new("Part")
-	part.Size = Vector3.new(0.2, 0.2, 0.2)
-	part.Color = color
-	part.Material = Enum.Material.Neon
-	part.Anchored = true
-	part.CanCollide = false
-	part.Position = position
-	part.Parent = game:GetService("Workspace")
 	local emitter = Instance.new("ParticleEmitter")
 	emitter.Color = ColorSequence.new(color)
-	emitter.Size = NumberSequence.new(0.5)
-	emitter.Lifetime = NumberRange.new(0.6)
-	emitter.Rate = 60
-	emitter.Speed = NumberRange.new(6)
-	emitter.Parent = part
-	task.delay(1, function()
-		part:Destroy()
+	emitter.Rate = 0
+	emitter.Lifetime = NumberRange.new(0.7)
+	emitter.Speed = NumberRange.new(12)
+	emitter.SpreadAngle = Vector2.new(180, 180)
+	emitter.Size = NumberSequence.new(0.8)
+	emitter.Parent = anchor
+	emitter:Emit(24)
+
+	task.delay(2, function()
+		anchor:Destroy()
 	end)
 end
 
-function Effects.bought(position: Vector3)
-	playSound("rbxassetid://13107261", 0.5)
-	sparkle(position, Color3.fromRGB(120, 255, 120))
+-- A label that floats up and fades, for "+$95" and "STOLEN!" moments.
+function Effects.floatText(position, text, color)
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "FloatText"
+	gui.Size = UDim2.new(0, 200, 0, 40)
+	gui.StudsOffset = Vector3.new(0, 2, 0)
+	gui.AlwaysOnTop = true
+
+	local anchor = Instance.new("Part")
+	anchor.Name = "FloatAnchor"
+	anchor.Size = Vector3.new(0.5, 0.5, 0.5)
+	anchor.Transparency = 1
+	anchor.Anchored = true
+	anchor.CanCollide = false
+	anchor.CFrame = CFrame.new(position)
+	anchor.Parent = workspace
+	gui.Parent = anchor
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBold
+	label.TextSize = 20
+	label.TextColor3 = color
+	label.TextStrokeTransparency = 0
+	label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	label.Text = text
+	label.Parent = gui
+
+	local tween = TweenService:Create(gui, TweenInfo.new(1.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		StudsOffset = Vector3.new(0, 7, 0),
+	})
+	tween:Play()
+	task.delay(1.4, function()
+		anchor:Destroy()
+	end)
 end
 
-function Effects.stolen(position: Vector3)
-	playSound("rbxassetid://13107261", 0.5)
-	sparkle(position, Color3.fromRGB(255, 210, 60))
+function Effects.buyEffect(position)
+	Effects.burst(position, Color3.fromRGB(120, 220, 90))
+	Effects.floatText(position, "BOUGHT!", Color3.fromRGB(120, 220, 90))
 end
 
-function Effects.slap()
-	playSound("rbxassetid://13107272", 0.6)
+function Effects.stealEffect(position)
+	Effects.burst(position, Color3.fromRGB(255, 180, 40))
+	Effects.floatText(position, "STOLEN!", Color3.fromRGB(255, 180, 40))
 end
 
-function Effects.rebirth(position: Vector3)
-	playSound("rbxassetid://13107265", 0.6)
-	sparkle(position, Color3.fromRGB(255, 190, 40))
+function Effects.slapEffect(position)
+	Effects.burst(position, Color3.fromRGB(255, 80, 80))
 end
 
-function Effects.tsunamiWarning()
-	playSound("rbxassetid://13107269", 0.6)
+function Effects.rebirthEffect(position)
+	Effects.burst(position, Color3.fromRGB(170, 90, 255))
+	Effects.floatText(position, "REBORN!", Color3.fromRGB(200, 140, 255))
 end
 
 return Effects

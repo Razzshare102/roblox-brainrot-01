@@ -1,218 +1,244 @@
--- GameState: the single source of truth for every player's state on the
--- server. Nothing else on the server keeps its own copy of a player's
--- cash, brainrots, lock or rebirths; every system reads and writes here.
--- The client never writes state directly — it asks through RemoteEvents
--- and the server validates each request here before changing anything.
+-- Brainrot Bay: one source of truth for every player's state and the bases.
+-- The server owns this table; the client only ever sees a compact copy
+-- sent over the StateSync remote. Nothing else keeps player numbers.
 
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local BrainrotData = require(ReplicatedStorage.Shared.BrainrotData)
+local BrainrotData = require(script.Parent.Parent.Shared.BrainrotData)
 
 local GameState = {}
 
-export type OwnedBrainrot = {
-	Uid: string,
-	DefId: string,
-	Mutation: string,
-	Mult: number,
-	Slot: number,
+-- The eight bases, in a ring around the plaza. Centers and colours match
+-- the platforms default.project.json builds. Slot pads sit on each
+-- platform in a 3 by 2 grid: x offsets -6, 0, 6 and z offsets -4, 4.
+GameState.BASES = {
+	{ center = Vector3.new(95, 1, 0), color = Color3.fromRGB(255, 69, 69) },
+	{ center = Vector3.new(67.2, 1, 67.2), color = Color3.fromRGB(255, 140, 41) },
+	{ center = Vector3.new(0, 1, 95), color = Color3.fromRGB(255, 209, 41) },
+	{ center = Vector3.new(-67.2, 1, 67.2), color = Color3.fromRGB(79, 199, 89) },
+	{ center = Vector3.new(-95, 1, 0), color = Color3.fromRGB(79, 140, 255) },
+	{ center = Vector3.new(-67.2, 1, -67.2), color = Color3.fromRGB(171, 89, 255) },
+	{ center = Vector3.new(0, 1, -95), color = Color3.fromRGB(255, 120, 181) },
+	{ center = Vector3.new(67.2, 1, -67.2), color = Color3.fromRGB(79, 219, 219) },
 }
 
-export type PlayerState = {
-	Cash: number,
-	Rebirths: number,
-	Multiplier: number, -- income multiplier from rebirths (1 + 0.25 per rebirth)
-	Slots: number, -- base slots owned (start 3, max 6)
-	Brainrots: { OwnedBrainrot },
-	LockUntil: number, -- os.clock() time the base lock ends, 0 when unlocked
-	LockCooldownUntil: number,
-	SpeedLevel: number, -- 0..3, +2 WalkSpeed each
-	SlapLevel: number, -- 0..3, +slap knockback each
-	LockExtraLevel: number, -- 0..2, +30s lock each
-	BoostUntil: number, -- os.clock() time a 2x income boost ends, 0 when none
-	Carrying: string?, -- uid of the brainrot this player is carrying, if any
-	LastSlapAt: number,
-}
+GameState.BASE_HALF_SIZE = 13
+GameState.SLOT_Y = 2.5
 
-local START_CASH = 100
-local START_SLOTS = 3
-local MAX_SLOTS = 6
-local LOCK_SECONDS = 60
-local LOCK_COOLDOWN = 90
-local REBIRTH_BASE_COST = 50000
-local REBIRTH_COST_MULT = 3
-
-local states: { [Player]: PlayerState } = {}
-local uidCounter = 0
-
-function GameState.newUid(): string
-	uidCounter += 1
-	return "br" .. tostring(uidCounter) .. "_" .. tostring(math.floor(os.clock() * 1000))
+-- World position of a slot pad on a base (slotIndex 1..6).
+function GameState.slotPosition(baseIndex, slotIndex)
+	local base = GameState.BASES[baseIndex]
+	local row = (slotIndex - 1) % 3
+	local col = math.floor((slotIndex - 1) / 3)
+	local dx = (row - 1) * 6
+	local dz = (col == 0) and -4 or 4
+	return Vector3.new(base.center.X + dx, GameState.SLOT_Y, base.center.Z + dz)
 end
 
--- A fresh state for a player who just joined.
-function GameState.newState(): PlayerState
-	return {
-		Cash = START_CASH,
-		Rebirths = 0,
-		Multiplier = 1,
-		Slots = START_SLOTS,
-		Brainrots = {},
-		LockUntil = 0,
-		LockCooldownUntil = 0,
-		SpeedLevel = 0,
-		SlapLevel = 0,
-		LockExtraLevel = 0,
-		BoostUntil = 0,
-		Carrying = nil,
-		LastSlapAt = 0,
+-- Is a world position standing on a base's platform?
+function GameState.onBasePlatform(baseIndex, position)
+	local base = GameState.BASES[baseIndex]
+	return math.abs(position.X - base.center.X) <= GameState.BASE_HALF_SIZE
+		and math.abs(position.Z - base.center.Z) <= GameState.BASE_HALF_SIZE
+		and position.Y > 1.5
+end
+
+local states = {}
+local baseOwners = {}
+local nextBrainrotId = 0
+
+-- Wall-clock seconds. Locks and cooldowns are whole seconds, so os.time
+-- is the right clock for them (os.clock measures CPU time, not wall time).
+local function now()
+	return os.time()
+end
+
+function GameState.newBrainrotId()
+	nextBrainrotId += 1
+	return "br_" .. tostring(nextBrainrotId)
+end
+
+function GameState.newState(player)
+	local state = {
+		player = player,
+		cash = 0,
+		rebirths = 0,
+		slots = BrainrotData.START_SLOTS,
+		speedLevel = 0,
+		slapLevel = 0,
+		lockLevel = 0,
+		income2x = false,
+		lockUntil = 0,
+		lockCooldownUntil = 0,
+		baseIndex = 0,
+		brainrots = {},
+		carrying = nil,
+		slapCooldownUntil = 0,
 	}
+	states[player.UserId] = state
+	return state
 end
 
-function GameState.get(player: Player): PlayerState?
-	return states[player]
+function GameState.getState(player)
+	return states[player.UserId]
 end
 
-function GameState.add(player: Player)
-	states[player] = GameState.newState()
+function GameState.getStateByUserId(userId)
+	return states[userId]
 end
 
-function GameState.remove(player: Player)
-	states[player] = nil
-end
-
-function GameState.forEach(callback: (Player, PlayerState) -> ())
-	for player, state in states do
-		callback(player, state)
+function GameState.removeState(player)
+	local state = states[player.UserId]
+	if state and state.baseIndex > 0 then
+		baseOwners[state.baseIndex] = nil
 	end
+	states[player.UserId] = nil
 end
 
--- Money per second from all owned brainrots, before the rebirth
--- multiplier and before any temporary boost.
-function GameState.baseIncome(state: PlayerState): number
-	local total = 0
-	for _, owned in state.Brainrots do
-		local def = BrainrotData.getById(owned.DefId)
-		if def then
-			total += def.Rate * owned.Mult
-		end
-	end
-	return total
-end
-
--- Money per second actually ticking right now.
-function GameState.incomePerSecond(state: PlayerState): number
-	local income = GameState.baseIncome(state) * state.Multiplier
-	if state.BoostUntil > os.clock() then
-		income *= 2
-	end
-	return income
-end
-
--- First free slot index, or 0 when the base is full.
-function GameState.freeSlot(state: PlayerState): number
-	local used: { [number]: boolean } = {}
-	for _, owned in state.Brainrots do
-		used[owned.Slot] = true
-	end
-	for i = 1, state.Slots do
-		if not used[i] then
-			return i
+function GameState.claimBase(player)
+	for index = 1, #GameState.BASES do
+		if baseOwners[index] == nil then
+			baseOwners[index] = player.UserId
+			local state = GameState.getState(player)
+			if state then
+				state.baseIndex = index
+			end
+			return index
 		end
 	end
 	return 0
 end
 
--- Put a brainrot on the player's base. Returns the owned record, or nil
--- when the base is full.
-function GameState.placeBrainrot(state: PlayerState, defId: string, mutation: string, mult: number): OwnedBrainrot?
+function GameState.baseOwner(baseIndex)
+	return baseOwners[baseIndex]
+end
+
+function GameState.allStates()
+	return states
+end
+
+function GameState.addCash(player, amount)
+	local state = GameState.getState(player)
+	if state then
+		state.cash += amount
+	end
+end
+
+function GameState.spendCash(player, amount)
+	local state = GameState.getState(player)
+	if not state or state.cash < amount then
+		return false
+	end
+	state.cash -= amount
+	return true
+end
+
+function GameState.rebirthMultiplier(state)
+	return BrainrotData.rebirthMultiplier(state.rebirths)
+end
+
+-- Dollars per second across every brainrot on the player's base.
+function GameState.totalIncome(state)
+	local sum = 0
+	for _, record in pairs(state.brainrots) do
+		local brainrot = BrainrotData.getBrainrot(record.brainrotId)
+		if brainrot then
+			sum += BrainrotData.baseIncome(brainrot, record.mutation)
+		end
+	end
+	sum *= GameState.rebirthMultiplier(state)
+	if state.income2x then
+		sum *= 2
+	end
+	return math.floor(sum)
+end
+
+function GameState.freeSlot(state)
+	for index = 1, state.slots do
+		if state.brainrots[index] == nil then
+			return index
+		end
+	end
+	return nil
+end
+
+function GameState.brainrotCount(state)
+	local count = 0
+	for _ in pairs(state.brainrots) do
+		count += 1
+	end
+	return count
+end
+
+function GameState.addBrainrot(state, record)
 	local slot = GameState.freeSlot(state)
-	if slot == 0 then
+	if not slot then
 		return nil
 	end
-	local owned: OwnedBrainrot = {
-		Uid = GameState.newUid(),
-		DefId = defId,
-		Mutation = mutation,
-		Mult = mult,
-		Slot = slot,
+	record.slotIndex = slot
+	state.brainrots[slot] = record
+	return slot
+end
+
+function GameState.removeBrainrot(state, slotIndex)
+	local record = state.brainrots[slotIndex]
+	state.brainrots[slotIndex] = nil
+	return record
+end
+
+function GameState.lockDuration(state)
+	return BrainrotData.LOCK_SECONDS + 30 * state.lockLevel
+end
+
+function GameState.isLocked(state)
+	return now() < state.lockUntil
+end
+
+function GameState.lockSecondsLeft(state)
+	local left = state.lockUntil - now()
+	if left < 0 then
+		return 0
+	end
+	return math.ceil(left)
+end
+
+function GameState.lockCooldownLeft(state)
+	local left = state.lockCooldownUntil - now()
+	if left < 0 then
+		return 0
+	end
+	return math.ceil(left)
+end
+
+-- Rebirth: cash and brainrots go, the +25% multiplier stays forever.
+function GameState.applyRebirth(state)
+	local cost = BrainrotData.rebirthCost(state.rebirths)
+	if state.cash < cost then
+		return false, cost
+	end
+	state.cash = 0
+	state.brainrots = {}
+	state.rebirths += 1
+	return true, cost
+end
+
+-- The compact copy the client gets over StateSync.
+function GameState.syncSnapshot(state)
+	return {
+		cash = math.floor(state.cash),
+		income = GameState.totalIncome(state),
+		rebirths = state.rebirths,
+		multiplier = GameState.rebirthMultiplier(state),
+		slots = state.slots,
+		brainrotCount = GameState.brainrotCount(state),
+		speedLevel = state.speedLevel,
+		slapLevel = state.slapLevel,
+		lockLevel = state.lockLevel,
+		income2x = state.income2x,
+		lockSecondsLeft = GameState.lockSecondsLeft(state),
+		lockCooldownLeft = GameState.lockCooldownLeft(state),
+		carrying = state.carrying ~= nil,
+		baseIndex = state.baseIndex,
+		rebirthCost = BrainrotData.rebirthCost(state.rebirths),
 	}
-	table.insert(state.Brainrots, owned)
-	return owned
 end
-
--- Take a brainrot off the player's base by uid. Returns it, or nil.
-function GameState.takeBrainrot(state: PlayerState, uid: string): OwnedBrainrot?
-	for i, owned in state.Brainrots do
-		if owned.Uid == uid then
-			table.remove(state.Brainrots, i)
-			return owned
-		end
-	end
-	return nil
-end
-
-function GameState.findBrainrot(state: PlayerState, uid: string): OwnedBrainrot?
-	for _, owned in state.Brainrots do
-		if owned.Uid == uid then
-			return owned
-		end
-	end
-	return nil
-end
-
--- Is this player's base locked right now?
-function GameState.isLocked(state: PlayerState): boolean
-	return state.LockUntil > os.clock()
-end
-
-function GameState.lockSecondsLeft(state: PlayerState): number
-	return math.max(0, state.LockUntil - os.clock())
-end
-
--- Lock the base for `seconds`. Returns false when on cooldown.
-function GameState.lockBase(state: PlayerState, seconds: number): boolean
-	local now = os.clock()
-	if now < state.LockCooldownUntil then
-		return false
-	end
-	if GameState.isLocked(state) then
-		return false
-	end
-	state.LockUntil = now + seconds
-	state.LockCooldownUntil = now + seconds + LOCK_COOLDOWN
-	return true
-end
-
--- Cash needed for the next rebirth.
-function GameState.rebirthCost(state: PlayerState): number
-	return REBIRTH_BASE_COST * (REBIRTH_COST_MULT ^ state.Rebirths)
-end
-
--- Rebirth: reset cash and brainrots, keep slots and upgrades, gain +25%
--- income forever. Returns false when the player cannot afford it.
-function GameState.rebirth(state: PlayerState): boolean
-	local cost = GameState.rebirthCost(state)
-	if state.Cash < cost then
-		return false
-	end
-	state.Cash = START_CASH
-	state.Brainrots = {}
-	state.Rebirths += 1
-	state.Multiplier = 1 + 0.25 * state.Rebirths
-	return true
-end
-
-GameState.START_CASH = START_CASH
-GameState.START_SLOTS = START_SLOTS
-GameState.MAX_SLOTS = MAX_SLOTS
-GameState.LOCK_SECONDS = LOCK_SECONDS
-GameState.LOCK_COOLDOWN = LOCK_COOLDOWN
-
--- Hand the state out to a player who left, so a dropped carried brainrot
--- can be returned to its owner's base.
-Players.PlayerRemoving:Connect(function(player)
-	states[player] = nil
-end)
 
 return GameState
